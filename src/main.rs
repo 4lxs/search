@@ -1,55 +1,34 @@
-mod block;
 mod launcher;
+mod searcher;
 
-use std::io;
+use std::{borrow::BorrowMut, cell::RefCell, rc::Rc};
 
-use anyhow::{anyhow, Context, Result};
-use block::{Block, BlockLine};
+use anyhow::Result;
+use searcher::Searcher;
 
 use crate::{
-    block::all_blocks,
-    launcher::{rofi::RofiLauncher, Entry, Launcher},
+    launcher::{rofi::RofiLauncher, Launcher},
+    searcher::all_searchers,
 };
 
-struct BlockData {
-    name: String,
-    block: Box<dyn Block>,
-    lines: Vec<BlockLine>,
+struct BlockData<'a> {
+    block: Rc<RefCell<dyn Searcher>>,
+    lines: Box<dyn Iterator<Item = &'a searcher::Entry>>,
 }
 
 fn main() -> Result<()> {
-    let mut blocks = all_blocks();
-    #[allow(unused_mut)] // doesn't compile without
-    let mut blocks = blocks
-        .drain()
-        .map(|(name, mut block)| {
-            BlockData {
-                name,
-                // populate with default search results
-                lines: block.get_lines("".into()),
-                block,
-            }
-        })
-        .collect::<Vec<BlockData>>();
+    let searchers = all_searchers();
 
-    let mut initial_entries = Vec::new();
-    let mut entries = Vec::new();
-
-    for (bix, block) in blocks.iter().enumerate() {
-        for line in &block.lines {
-            initial_entries.push(Entry {
-                id: entries.len(),
-                text: line.text.clone(),
-                icon: line.icon.clone(),
-            });
-            entries.push((bix, line));
-        }
-    }
-
+    let initial_entries = searchers.into_iter().flat_map(|mut searcher| {
+        let src = Rc::clone(&searcher);
+        (**searcher.borrow_mut())
+            .borrow_mut()
+            .get_lines(src, "".into())
+    });
     let mut launcher = RofiLauncher::new();
-    launcher.update(&mut initial_entries)?;
+    launcher.update(initial_entries)?;
 
-    let entry_id = loop {
+    let entry = loop {
         match launcher.wait()? {
             launcher::Event::InputChange(_input) => {}
             launcher::Event::SelectEntry(entry) => {
@@ -58,17 +37,12 @@ fn main() -> Result<()> {
         }
     };
 
-    let (bix, line) = match entries.get(entry_id) {
-        Some(v) => v,
-        None => return Err(anyhow!("invalid eix")),
-    };
+    entry.run()
+}
 
-    let block = match blocks.get(*bix) {
-        Some(b) => b,
-        None => return Err(anyhow!("failed to get block {bix} of {}", blocks.len())),
-    };
-
-    block.block.run(line)?;
-
-    return Ok(());
+mod tests {
+    #[test]
+    fn test() {
+        assert_eq!(1, 1);
+    }
 }

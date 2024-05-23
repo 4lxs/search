@@ -1,24 +1,18 @@
+use crate::searcher;
+
 pub mod rofi;
 
 /// the text that the user entered so far
 pub struct Input {
-    input: String,
+    _input: String,
 }
 
-pub type EntryId = usize;
-
-pub struct Entry {
-    pub id: EntryId,
-    pub text: String,
-    pub icon: Option<String>,
-}
-
-pub enum Event {
+pub enum Event<'a> {
     InputChange(Input),
-    SelectEntry(EntryId),
+    SelectEntry(&'a searcher::Entry),
 }
 
-pub trait Launcher {
-    fn wait(&self) -> anyhow::Result<Event>;
-    fn update(&mut self, entries: &mut Vec<Entry>) -> anyhow::Result<()>;
+pub trait Launcher<'a> {
+    fn wait(&'a self) -> anyhow::Result<Event<'a>>;
+    fn update<'b>(&mut self, entries: impl Iterator<Item = searcher::Entry>) -> anyhow::Result<()>;
 }

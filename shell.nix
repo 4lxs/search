@@ -4,6 +4,7 @@ pkgs.mkShell {
     clang
     llvmPackages.bintools
     rustup
+    cargo-nextest
   ];
   RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
   # https://github.com/rust-lang/rust-bindgen#environment-variables

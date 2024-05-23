@@ -1,10 +1,9 @@
 use std::io;
 
-use crate::launcher::{EntryId, Event};
+use crate::{launcher::Event, searcher};
 
 use super::Launcher;
-
-use anyhow::Result;
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Debug)]
@@ -22,63 +21,63 @@ enum EventNames {
 struct IncomingMessage {
     #[serde(rename(deserialize = "name"))]
     event: EventNames,
-    value: String,
+    #[serde(rename(deserialize = "value"))]
+    _value: String,
     data: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default, Debug)]
 struct ExtraMessageData {
     entry_id: usize,
 }
 
 #[derive(Serialize, Default)]
-struct OutgoingMessageLine {
+struct OutgoingMessageLine<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    text: Option<String>,
+    text: Option<&'a str>,
     urgent: bool,
     highlight: bool,
     markup: bool,
     nonselectable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    icon: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<String>,
+    icon: Option<&'a str>,
+    data: String,
 }
 
 #[derive(Serialize)]
-struct OutgoingMessage {
+struct OutgoingMessage<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
+    message: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    overlay: Option<String>,
+    overlay: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    prompt: Option<String>,
+    prompt: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    input: Option<String>,
+    input: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "input action")]
-    input_action: Option<String>,
+    input_action: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "event format")]
-    event_format: Option<String>,
+    event_format: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "active entry")]
-    active_entry: Option<String>,
+    active_entry: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    lines: Option<Vec<OutgoingMessageLine>>,
+    lines: Option<Vec<OutgoingMessageLine<'a>>>,
 }
 
-impl Default for OutgoingMessage {
+impl<'a> Default for OutgoingMessage<'a> {
     fn default() -> Self {
         Self {
             message: Default::default(),
             overlay: Default::default(),
             prompt: Default::default(),
             input: Default::default(),
-            input_action: Some(String::from("send")),
-            event_format: Some(String::from(
+            input_action: Some("send"),
+            event_format: Some(
                 r#"{"name":"{{name_enum}}","value":"{{value_escaped}}","data":"{{data_escaped}}"}"#,
-            )),
+            ),
             active_entry: Default::default(),
             lines: Default::default(),
         }
@@ -86,7 +85,9 @@ impl Default for OutgoingMessage {
 }
 
 #[derive(Default)]
-pub struct RofiLauncher {}
+pub struct RofiLauncher {
+    entries: Vec<searcher::Entry>,
+}
 
 impl RofiLauncher {
     pub fn new() -> Self {
@@ -94,8 +95,8 @@ impl RofiLauncher {
     }
 }
 
-impl Launcher for RofiLauncher {
-    fn wait(&self) -> anyhow::Result<super::Event> {
+impl<'a> Launcher<'a> for RofiLauncher {
+    fn wait(&'a self) -> anyhow::Result<Event<'a>> {
         loop {
             let mut line = String::new();
             let _ = io::stdin().read_line(&mut line);
@@ -105,27 +106,31 @@ impl Launcher for RofiLauncher {
 
             match msg.event {
                 EventNames::SelectEntry => {
-                    let id = match msg.data.parse::<EntryId>() {
-                        Ok(id) => id,
-                        Err(err) => {
-                            eprintln!("failed to parse entry id: {err}");
-                            continue;
+                    return if let Ok(data) = serde_json::from_str::<ExtraMessageData>(&msg.data) {
+                        if let Some(entry) = self.entries.get(data.entry_id) {
+                            Ok(Event::SelectEntry(entry))
+                        } else {
+                            Err(anyhow!("Invalid entry id. shouldn't happen"))
                         }
-                    };
-                    return Ok(Event::SelectEntry(id));
+                    } else {
+                        Err(anyhow!("expected data with SelectEntry"))
+                    }
                 }
                 _ => continue,
             }
         }
     }
 
-    fn update(&mut self, entries: &mut Vec<super::Entry>) -> anyhow::Result<()> {
-        let msg_lines = entries
-            .drain(..)
-            .map(|x| OutgoingMessageLine {
-                text: Some(x.text),
-                icon: x.icon,
-                data: Some(x.id.to_string()),
+    fn update<'b>(&mut self, entries: impl Iterator<Item = searcher::Entry>) -> anyhow::Result<()> {
+        self.entries = entries.collect();
+        let msg_lines = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, x)| OutgoingMessageLine {
+                text: Some(&x.text),
+                icon: x.icon.as_deref(),
+                data: serde_json::to_string(&ExtraMessageData { entry_id: i }).unwrap(),
                 ..Default::default()
             })
             .collect();

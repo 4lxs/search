@@ -1,13 +1,15 @@
 use anyhow::{anyhow, Context};
 use freedesktop_desktop_entry::{default_paths, DesktopEntry, Iter};
+use std::fmt::Write;
 use std::{
-    collections::{hash_map::Entry, HashMap},
-    fmt::Write,
+    cell::RefCell,
+    collections::{hash_map, HashMap},
     path::PathBuf,
     process::Command,
+    rc::Rc,
 };
 
-use super::{Block, BlockLine, BlockLineData};
+use super::{Entry, EntryData, Searcher};
 
 pub struct LineData {
     cmd: String,
@@ -24,7 +26,7 @@ impl LineData {
             .filter(|c| {
                 let res = c != &'%' && !previsperc;
                 previsperc = c == &'%';
-                return res;
+                res
             })
             .collect();
 
@@ -39,12 +41,16 @@ impl LineData {
 }
 
 #[derive(Default)]
-pub struct DesktopEntryBlock {
+pub struct DesktopEntrySearcher {
     desktop_entries: HashMap<String, PathBuf>,
 }
 
-impl Block for DesktopEntryBlock {
-    fn get_lines<'a>(&mut self, _input: String) -> Vec<BlockLine> {
+impl Searcher for DesktopEntrySearcher {
+    fn get_lines<'a>(
+        &'a mut self,
+        me: Rc<RefCell<dyn Searcher>>,
+        _input: String,
+    ) -> Box<dyn Iterator<Item = Entry>> {
         let mut lines = vec![];
         for path in Iter::new(default_paths()) {
             eprintln!("reading {}", path.to_str().unwrap());
@@ -73,9 +79,8 @@ impl Block for DesktopEntryBlock {
                 continue;
             }
 
-            match entry.type_() {
-                Some(type_) if type_ == "Application" => {}
-                _ => continue,
+            if entry.type_() != Some("Application") {
+                continue;
             }
 
             let mut text = match entry.name(Option::None) {
@@ -86,7 +91,7 @@ impl Block for DesktopEntryBlock {
                 write!(
                     text,
                     " <span weight='light' size='small'><i>({})</i></span>",
-                    generic_name.to_string()
+                    generic_name
                 )
                 .unwrap();
             }
@@ -103,27 +108,28 @@ impl Block for DesktopEntryBlock {
 
             let entry_id = entry.id().to_string();
             let path = match self.desktop_entries.entry(entry_id.clone()) {
-                Entry::Occupied(..) => continue,
-                Entry::Vacant(e) => e.insert(path.clone()),
+                hash_map::Entry::Occupied(..) => continue,
+                hash_map::Entry::Vacant(e) => e.insert(path.clone()),
             };
 
             let line_data = LineData { cmd };
 
             eprintln!("entry {:?}: {}", path, text);
-            let entryline = BlockLine {
+            let entryline = Entry {
                 text,
                 icon,
-                data: BlockLineData::DesktopEntryData(line_data),
+                data: EntryData::DesktopEntry(line_data),
+                parent: me.clone(),
             };
             lines.push(entryline);
         }
 
-        return lines;
+        Box::from(lines.into_iter())
     }
 
-    fn run(&self, entry: &BlockLine) -> anyhow::Result<()> {
+    fn run(&self, entry: &Entry) -> anyhow::Result<()> {
         let data = match &entry.data {
-            BlockLineData::DesktopEntryData(data) => data,
+            EntryData::DesktopEntry(data) => data,
             _ => return Err(anyhow!("invalid entry. shouldn't ever happen")),
         };
         data.exec()
